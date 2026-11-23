@@ -303,7 +303,7 @@ Top-level directories:
 - `evals/` — optional user-authored LLM eval suites, IC fixtures, prompt variants, and evaluator modules. These are run manually with `pnpm eval <suite.ts>` and are not part of ordinary Vitest unit tests.
   - `evals/skill-activation/` — compares the pre/post Skill Activation system prompts with fake skills and reports `load_skill` / correct-skill call rates.
   - `evals/agreement-review/` — exercises the `agreement_review_required` recovery choice, checking that substantive drafts are rewritten while pure agreement becomes a reaction.
-- `docs/` — architecture and design documents (not prompts)
+- `docs/` — architecture and design documents (not prompts). See [notes design](docs/notes-design.md) for the main Agent's proposed per-chat notes.
   - `dcp-design.md` — architecture rationale and Driver/TR design
   - `content-aware-frame-selection.md` — MSE-based frame selection findings and rationale
   - `humanize.md` — human-likeness design notes
