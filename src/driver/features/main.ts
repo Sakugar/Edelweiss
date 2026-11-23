@@ -7,6 +7,7 @@ import { createHumanLikenessFeature } from './human-likeness';
 import { createInterruptionFeature } from './interruption';
 import { createLoggingFeature } from './logging';
 import { createMailboxFeature } from './mailbox';
+import { createNotesFeature } from './notes';
 import { createPersistenceFeature } from './persistence';
 import { createPromptFeature } from './prompt';
 import { createReactionFeature } from './reaction';
@@ -22,6 +23,7 @@ export const createMainTurnFeatures = (deps: MainTurnFeatureDeps): DriverFeature
   createCapabilityFeature(deps),
   createToolFeature(deps),
   createSkillFeature(deps),
+  ...(deps.chatConfig.notes?.enabled ? [createNotesFeature(deps, deps.chatConfig.notes)] : []),
   createHumanLikenessFeature(deps),
   createPromptFeature(deps),
   createLoggingFeature(deps),

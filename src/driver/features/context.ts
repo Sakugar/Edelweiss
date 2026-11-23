@@ -13,7 +13,7 @@ export const createContextFeature = (deps: MainTurnFeatureDeps): DriverFeature =
     const composed = composeContext(
       turn.rcAtStart,
       trs,
-      deps.chatConfig.compaction.maxContextEstTokens,
+      deps.chatConfig.compaction.maxContextEstTokens - ctx.scratch.noteContextReservedTokens,
       turn.model.model,
       summary,
     );

@@ -37,6 +37,18 @@ const RuntimeSchema = v.object({
 
 // --- Chat-level config schemas ---
 
+const NotesBudgetSchema = v.object({
+  maxContextEstTokens: v.pipe(v.number(), v.integer(), v.minValue(0)),
+});
+
+const NotesConfigSchema = v.object({
+  enabled: v.optional(v.boolean(), false),
+  alwaysLoad: v.optional(NotesBudgetSchema, { maxContextEstTokens: 2000 }),
+  onDemand: v.optional(NotesBudgetSchema, { maxContextEstTokens: 8000 }),
+});
+
+export type NotesConfig = v.InferOutput<typeof NotesConfigSchema>;
+
 const ChatConfigSchema = v.object({
   platform: v.optional(v.picklist(['telegram', 'onebot']), 'telegram'),
   model: v.optional(v.string(), 'primary'),
@@ -94,6 +106,7 @@ const ChatConfigSchema = v.object({
   skills: v.optional(v.object({
     folder: v.pipe(v.string(), v.nonEmpty()),
   })),
+  notes: v.optional(NotesConfigSchema),
   tools: v.object({
     /** Expose the raw Telegram Bot API / OneBot 11 API as the `advanced_im_api` tool. */
     enableAdvancedApi: v.optional(v.boolean(), false),
@@ -173,6 +186,11 @@ const ChatOverrideSchema = v.optional(v.partial(v.object({
   skills: v.object({
     folder: v.string(),
   }),
+  notes: v.partial(v.object({
+    enabled: v.boolean(),
+    alwaysLoad: NotesBudgetSchema,
+    onDemand: NotesBudgetSchema,
+  })),
   tools: v.partial(v.object({
     enableAdvancedApi: v.boolean(),
     recordStaySilentReason: v.boolean(),
@@ -277,6 +295,7 @@ export interface ResolvedChatConfig {
     reducePersonaWords: Record<string, number>;
   };
   skills?: { folder: string };
+  notes?: NotesConfig;
   tools: {
     enableAdvancedApi: boolean;
     recordStaySilentReason: boolean;
@@ -366,6 +385,7 @@ export const resolveChatConfig = (config: Config, chatId: string): ResolvedChatC
       maxFrames: merged.customEmojiToText.maxFrames,
     },
     skills: merged.skills,
+    notes: merged.notes ? v.parse(NotesConfigSchema, merged.notes) : undefined,
     debounce: merged.debounce,
     blockedUserIds: merged.blockedUserIds,
     // Arrays in es-toolkit merge are merged by index; this policy is a replacement list.

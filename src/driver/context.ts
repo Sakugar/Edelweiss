@@ -16,18 +16,20 @@ const CHARS_PER_TOKEN = 2;
 // Image token estimation: thumbnails ≤ 75_000 px → ~100 tokens (Claude formula).
 const IMAGE_TOKENS = 100;
 
+export const estimateTextTokens = (text: string): number => Math.ceil(text.length / CHARS_PER_TOKEN);
+
 const partTokens = (part: InputPart): number =>
-  part.kind === 'image' ? IMAGE_TOKENS : Math.ceil(part.text.length / CHARS_PER_TOKEN);
+  part.kind === 'image' ? IMAGE_TOKENS : estimateTextTokens(part.text);
 
 const toolResultTokens = (tr: ToolResult): number =>
   typeof tr.payload === 'string'
-    ? Math.ceil(tr.payload.length / CHARS_PER_TOKEN)
+    ? estimateTextTokens(tr.payload)
     : tr.payload.reduce((a, p) => a + partTokens(p), 0);
 
 const outputPartTokens = (part: OutputMessage['parts'][number]): number => {
-  if (part.kind === 'text') return Math.ceil(part.text.length / CHARS_PER_TOKEN);
+  if (part.kind === 'text') return estimateTextTokens(part.text);
   if (part.kind === 'toolCall') return Math.ceil((part.name.length + part.args.length) / CHARS_PER_TOKEN);
-  if (part.kind === 'textGroup') return part.content.reduce((a, t) => a + Math.ceil(t.text.length / CHARS_PER_TOKEN), 0);
+  if (part.kind === 'textGroup') return part.content.reduce((a, t) => a + estimateTextTokens(t.text), 0);
   return 20; // reasoning — rough
 };
 
@@ -165,7 +167,7 @@ export const findWorkingWindowCursor = (
   const entries: Entry[] = [];
   for (const seg of rc) {
     const tokens = seg.content.reduce((a, p) =>
-      a + (p.type === 'text' ? Math.ceil(p.text.length / CHARS_PER_TOKEN) : IMAGE_TOKENS), 0);
+      (a, p) => a + (p.type === 'text' ? estimateTextTokens(p.text) : IMAGE_TOKENS), 0);
     entries.push({ timeMs: seg.receivedAtMs, tokens });
   }
   for (const tr of trs) {

@@ -31,6 +31,7 @@ export const createPromptFeature = (deps: MainTurnFeatureDeps): DriverFeature =>
       isMentioned,
       isReplied,
       isAssociatedChannelPost,
+      hasNotes: deps.chatConfig.notes?.enabled,
       recentSendMessageHumanLikenessXml: ctx.scratch.recentSendMessageHumanLikenessXml,
       isInterrupted,
       activeBackgroundTasks: deps.getActiveBackgroundTasks(deps.chatId),

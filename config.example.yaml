@@ -63,6 +63,12 @@ chats:
       maxContextEstTokens: 512000    # high water mark: trigger compaction when estimated context exceeds this
       workingWindowEstTokens: 8000   # low water mark: how many estimated tokens of raw content to retain after compaction
       # model: "primary"           # optional: override model for compaction calls (defaults to chat model)
+    notes:
+      enabled: false
+      alwaysLoad:
+        maxContextEstTokens: 2000
+      onDemand:
+        maxContextEstTokens: 8000
     imageToText:
       enabled: false
       model: "primary"            # references a key in models
