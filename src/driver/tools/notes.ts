@@ -35,10 +35,10 @@ export const createWriteNoteTool = (write: (draft: NoteDraft) => Promise<void>):
   },
 });
 
-export const createLoadNoteTool = (load: (id: string, offset: number) => string): CahciuaTool => createTool({
+export const createLoadNoteTool = (load: (id: string, offset?: number) => string): CahciuaTool => createTool({
   name: LOAD_NOTE_TOOL,
   execution: { lane: 'serial' },
-  description: 'Read an on-demand chat note by ID. If a result contains nextOffset, use that offset to resume when budget is available.',
+  description: 'Read an on-demand chat note by ID. Omit offset to resume an unfinished note, including in a later turn. Set offset to 0 to restart.',
   parameters: {
     type: 'object',
     properties: {
@@ -49,7 +49,7 @@ export const createLoadNoteTool = (load: (id: string, offset: number) => string)
     additionalProperties: false,
   },
   execute(input) {
-    const { id, offset = 0 } = input as { id: string; offset?: number };
+    const { id, offset } = input as { id: string; offset?: number };
     return { content: load(id, offset), requiresFollowUp: true };
   },
 });

@@ -652,7 +652,7 @@ The bash tool intercepts built-in pseudo commands before shell execution: `chat_
 
 ### Chat Notes
 
-Opt in with `chats.<id>.notes.enabled`. The main-turn `features/notes.ts` loads Markdown from `data/notes/<platform>/<hex chat ID>/`, applies separate estimated-token budgets for `always` and `on-demand`, and registers `write_note` and `load_note`. Note writes are silent and always create or update on-demand notes. Maintainers can edit front matter to load a note every turn. Note tool pairs stay out of persisted turn responses, so new turns retrieve notes through the current budgets.
+Opt in with `chats.<id>.notes.enabled`. The main-turn `features/notes.ts` loads Markdown from `data/notes/<platform>/<hex chat ID>/` and registers `write_note` and `load_note`. The initial request pays for always-loaded text and the index. Loading a page charges its actual estimated size and can evict older history. A per-note `.cursor` records the body hash and next offset after the model consumes a page. A changed body starts at offset zero. Failed writes retain their error for the next model step. Note tool pairs stay out of persisted turn responses. Compaction runs the main tool preparation hooks to assemble the same ordered schemas with tool execution disabled.
 
 ### Background Tasks
 

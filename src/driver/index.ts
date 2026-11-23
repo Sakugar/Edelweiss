@@ -16,7 +16,7 @@ import type { AgentId, AgentMessage, SubagentState } from './subagents/types';
 import { createToolsForCapabilities } from './tool-providers';
 import type { CapabilityToolProviderDeps } from './tool-providers';
 import type { CahciuaTool, SendMessageAttachment, SendMessageTurnFlags } from './tools';
-import { TurnPreparationSkipped } from './turn-features';
+import { createTurnContext, runFeatureEffects, TurnPreparationSkipped } from './turn-features';
 import { createTurnPhases, runTurn } from './turn-phases';
 import { buildMainCapabilities, buildMainSystemPromptParams } from './turn-prefix';
 import { createDefaultTurnCapabilities, createSchedulerState } from './turn-state';
@@ -335,6 +335,34 @@ export const createDriver = (config: DriverConfig, deps: {
       },
     });
 
+    const createFeatures = () => createMainTurnFeatures({
+      chatId,
+      getChatName,
+      chatConfig,
+      log,
+      rc,
+      offline,
+      running,
+      lastProcessedMs,
+      cursorMs,
+      summary,
+      allSkills,
+      mailbox,
+      subagentManager,
+      loadTRs,
+      loadTurnResponses: deps.loadTurnResponses,
+      persistTurnResponse: deps.persistTurnResponse,
+      createCapabilityTools,
+      createSendMessageTurnFlags,
+      lastTRInterrupted,
+      schedulerController,
+      focusMode,
+      refreshAllowedReactionEmojis: deps.refreshAllowedReactionEmojis,
+      getAllowedReactionEmojis: deps.getAllowedReactionEmojis,
+      getActiveBackgroundTasks: deps.backgroundTask.getActiveTasks,
+      nowString: localTimeNow,
+    });
+
     // Scheduler 已经占用 chat loop，异步 LLM Turn 的启动由此函数负责。
     const executeLlmCall = ({ rcAtStart, wasOffline }: StartedTurnInfo) => {
       void (async () => {
@@ -345,39 +373,12 @@ export const createDriver = (config: DriverConfig, deps: {
           turn = createMainTurn(rcAtStart, stepAbortController, wasOffline);
           turn.scope.activeTurn = turn;
           schedulerController.attachAbortController(stepAbortController);
-          const features = createMainTurnFeatures({
-            chatId,
-            getChatName,
-            chatConfig,
-            log,
-            rc,
-            offline,
-            running,
-            lastProcessedMs,
-            cursorMs,
-            summary,
-            allSkills,
-            mailbox,
-            subagentManager,
-            loadTRs,
-            loadTurnResponses: deps.loadTurnResponses,
-            persistTurnResponse: deps.persistTurnResponse,
-            createCapabilityTools,
-            createSendMessageTurnFlags,
-            lastTRInterrupted,
-            schedulerController,
-            focusMode,
-            refreshAllowedReactionEmojis: deps.refreshAllowedReactionEmojis,
-            getAllowedReactionEmojis: deps.getAllowedReactionEmojis,
-            getActiveBackgroundTasks: deps.backgroundTask.getActiveTasks,
-            nowString: localTimeNow,
-          });
           const phases = createTurnPhases({
             runner: getOrCreateRunner(turn.model),
             executorChatId: chatId,
             log,
             maxImagesAllowed: turn.model.maxImagesAllowed,
-            features,
+            features: createFeatures(),
           });
           lifecycleStarted = true;
           await runTurn(turn, phases);
@@ -486,10 +487,11 @@ export const createDriver = (config: DriverConfig, deps: {
           reactionEmojis,
           capabilities,
         }));
-        const tools = [
-          ...createCapabilityTools(capabilities, reactionEmojis, { wasLengthLimited: false, inFocusMode: false }),
-          ...(chatConfig.subagents.enabled ? subagentManager.mainTools() : []),
-        ].map(toToolSchema);
+        const schemaTurn = createMainTurn(rcSnapshot, new AbortController(), false);
+        schemaTurn.capabilities = capabilities;
+        schemaTurn.reactionEmojis = reactionEmojis;
+        await runFeatureEffects(createTurnContext(schemaTurn), createFeatures(), 'prepareTools');
+        const tools = schemaTurn.tools.map(toToolSchema);
 
         if (compactEndpoint.model !== chatConfig.primaryModel.model
           || compactEndpoint.apiBaseUrl !== chatConfig.primaryModel.apiBaseUrl) {

@@ -4,14 +4,16 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { estimateEntryTokens } from './context';
 import { createDriver } from './index';
 import * as noteStorage from './notes';
-import { createRunner } from './runner';
+import { createRunner, toToolSchema } from './runner';
 import { executeToolCall } from './tools/execution';
 import type { ResolvedChatConfig, RuntimeConfig } from '../config/config';
 import { setupLogger, useLogger } from '../config/logger';
 import type { LlmEndpoint, Usage } from '../llm/types';
 import type { RenderedContext } from '../rendering/types';
+import type { ConversationEntry } from '../unified-api/types';
 
 const mocks = vi.hoisted(() => ({
   renderLateBindingPrompt: vi.fn(async () => 'late-binding'),
@@ -154,9 +156,13 @@ const createTestDriver = (
   onDebounceStateChange?: (chatId: string, isDebouncing: boolean) => void,
   overrides: Partial<Parameters<typeof createDriver>[1]> = {},
   notes?: ResolvedChatConfig['notes'],
+  maxContextEstTokens = 100_000,
 ) => createDriver({
   chatIds: ['chat'],
-  resolveChatConfig: () => ({ ...chatConfig(debounce), notes }),
+  resolveChatConfig: () => {
+    const config = chatConfig(debounce);
+    return { ...config, notes, compaction: { ...config.compaction, maxContextEstTokens } };
+  },
 }, {
   loadTurnResponses: async () => [],
   persistTurnResponse: async () => {},
@@ -184,7 +190,7 @@ const createTestDriver = (
 });
 
 describe('main Agent notes', () => {
-  it('writes silently and reads in a later turn without persisting note tool content in the turn response', async () => {
+  it('recovers a failed write, saves silently and keeps note bodies out of persisted history', async () => {
     const root = await mkdtemp(join(tmpdir(), 'edelweiss-note-turn-'));
     const store = noteStorage.createNoteStore('telegram', 'chat', root);
     const storeOverride = vi.spyOn(noteStorage, 'createNoteStore').mockReturnValue(store);
@@ -200,9 +206,15 @@ describe('main Agent notes', () => {
     const requestedAtMs = Date.now();
     const draft = { id: 'deploy', title: '部署决定', description: '本周部署时间', body: '周五 22:00 部署。' };
     const call = { kind: 'toolCall', callId: 'note-call', name: 'write_note', args: JSON.stringify(draft) } as const;
+    const invalid = { ...call, callId: 'invalid', args: JSON.stringify({ id: draft.id, body: draft.body }) };
     mocks.callModelStep.mockReset().mockResolvedValue({
       entries: [],
       toolCalls: [],
+      usage,
+      requestedAtMs,
+    }).mockResolvedValueOnce({
+      entries: [{ kind: 'message', role: 'assistant', parts: [invalid] }],
+      toolCalls: [invalid],
       usage,
       requestedAtMs,
     }).mockResolvedValueOnce({
@@ -213,13 +225,17 @@ describe('main Agent notes', () => {
     });
     const executeNotes: ReturnType<typeof createRunner>['executeToolStep'] = async (calls, params) =>
       await Promise.all(calls.map(tool => executeToolCall(tool.callId, tool.name, tool.args, params.tools, params.log)));
-    mocks.executeToolStep.mockImplementationOnce(executeNotes);
+    mocks.executeToolStep.mockImplementationOnce(executeNotes).mockImplementationOnce(executeNotes);
     try {
       driver.handleEvent('chat', [{ ...rc(requestedAtMs - 1)[0]!, mentionsMe: true }]);
-      await vi.waitFor(() => expect(persistTurnResponse).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(persistTurnResponse).toHaveBeenCalledTimes(2));
+      const retry = JSON.stringify(mocks.callModelStep.mock.calls[1]![0]);
+      expect(retry).toContain('Arguments do not match schema');
+      expect(retry).toContain(draft.id);
+      expect(retry).not.toContain(draft.body);
       expect(await store.list()).toEqual([{ ...draft, load: 'on-demand', sourceMessageIds: [] }]);
       expect(sendMessage).not.toHaveBeenCalled();
-      expect(mocks.callModelStep).toHaveBeenCalledTimes(1);
+      expect(mocks.callModelStep).toHaveBeenCalledTimes(2);
       expect(persistTurnResponse).toHaveBeenCalledWith('chat', expect.objectContaining({ entries: [] }));
 
       const nextRequest = requestedAtMs + 100;
@@ -234,14 +250,78 @@ describe('main Agent notes', () => {
       });
       mocks.executeToolStep.mockImplementationOnce(executeNotes);
       driver.handleEvent('chat', [{ ...rc(nextRequest - 1)[0]!, mentionsMe: true }]);
-      await vi.waitFor(() => expect(persistTurnResponse).toHaveBeenCalledTimes(3));
-      expect(mocks.callModelStep).toHaveBeenCalledTimes(3);
-      const working = JSON.stringify(mocks.callModelStep.mock.calls[2]?.[0]);
+      await vi.waitFor(() => expect(persistTurnResponse).toHaveBeenCalledTimes(4));
+      expect(mocks.callModelStep).toHaveBeenCalledTimes(4);
+      const working = JSON.stringify(mocks.callModelStep.mock.calls[3]?.[0]);
       expect(working).toContain(draft.body);
       expect(JSON.stringify(persistTurnResponse.mock.calls)).not.toContain(draft.body);
     } finally {
       driver.stop();
       storeOverride.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps chat history and resumes delivered pages by ID across driver restarts and note edits', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'edelweiss-note-resume-'));
+    const store = noteStorage.createNoteStore('telegram', 'chat', root);
+    const override = vi.spyOn(noteStorage, 'createNoteStore').mockReturnValue(store);
+    const draft = { id: 'schedule', title: 'Schedule', description: 'Time', body: 'short' };
+    const readTurn = async (readBudget: number, messagePadding = 0) => {
+      const persist = vi.fn(async () => {});
+      const driver = createTestDriver(
+        { initialDelayMs: 0, typingExtendMs: 0, maxDelayMs: 0, typingExemptUsers: [] },
+        undefined, { persistTurnResponse: persist },
+        { enabled: true, alwaysLoad: { maxContextEstTokens: 0 }, onDemand: { maxContextEstTokens: readBudget } }, 4000,
+      );
+      const call = { kind: 'toolCall', callId: 'read', name: 'load_note', args: JSON.stringify({ id: draft.id }) };
+      const requestedAtMs = Date.now();
+      mocks.callModelStep.mockReset().mockResolvedValueOnce({
+        entries: [{ kind: 'message', role: 'assistant', parts: [call] }], toolCalls: [call], usage, requestedAtMs,
+      }).mockResolvedValue({ entries: [], toolCalls: [], usage, requestedAtMs });
+      mocks.executeToolStep.mockImplementationOnce(async (calls, params) =>
+        await Promise.all(calls.map(tool => executeToolCall(tool.callId, tool.name, tool.args, params.tools, params.log))));
+      try {
+        const messages = rc(...Array.from({ length: 10 }, (_, index) => requestedAtMs - 10 + index));
+        driver.handleEvent('chat', messages.map(message => ({
+          ...message, mentionsMe: true,
+          content: [{ type: 'text', text: `message ${message.receivedAtMs} ${'x'.repeat(messagePadding)}` }],
+        })));
+        await vi.waitFor(() => expect(persist).toHaveBeenCalledTimes(2));
+        const firstRequest = JSON.stringify(mocks.callModelStep.mock.calls[0]![0]);
+        for (const message of messages) expect(firstRequest).toContain(`message ${message.receivedAtMs}`);
+        const entries = mocks.callModelStep.mock.calls[1]![0] as ConversationEntry[];
+        expect(estimateEntryTokens(entries)).toBeLessThanOrEqual(4000);
+        expect(JSON.stringify(entries)).toContain(`message ${messages.at(-1)!.receivedAtMs}`);
+        const result = entries.find(entry => entry.kind === 'toolResult');
+        expect(result).toBeDefined();
+        return JSON.parse(result!.payload as string) as { body: string; nextOffset?: number };
+      } finally {
+        driver.stop();
+      }
+    };
+    try {
+      await store.write(draft);
+      expect((await readTurn(8000)).body).toBe('short');
+      const body = Array.from({ length: 100 }, (_, index) => `日期${index}📆`).join('');
+      await store.write({ ...draft, body });
+      const first = await readTurn(180);
+      expect(first.nextOffset).toBeGreaterThan(0);
+      const second = await readTurn(180);
+      expect(first.body + second.body).toBe(Array.from(body).slice(0, Array.from(first.body + second.body).length).join(''));
+      const last = await readTurn(8000);
+      expect(last.nextOffset).toBeUndefined();
+      expect(first.body + second.body + last.body).toBe(body);
+      expect((await readTurn(180)).body).toBe(first.body);
+      const replacement = 'new schedule '.repeat(100);
+      await store.write({ ...draft, body: replacement });
+      const edited = await readTurn(180);
+      expect(edited.body).toBe(replacement.slice(0, edited.nextOffset));
+      await store.write({ ...draft, body: 'deployment '.repeat(1000) });
+      const crowded = await readTurn(8000, 700);
+      expect(crowded.nextOffset).toBeGreaterThan(1000);
+    } finally {
+      override.mockRestore();
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -452,7 +532,7 @@ describe('createDriver debounce scheduling', () => {
     }
   });
 
-  it('manually compacts eligible history below the automatic high-water mark', async () => {
+  it.each([false, true])('manually compacts with the main tool prefix (notes enabled: %s)', async enabled => {
     const persistCompaction = vi.fn();
     mocks.runCompaction.mockImplementation(async params => ({
       oldCursorMs: params.oldCursorMs,
@@ -466,7 +546,8 @@ describe('createDriver debounce scheduling', () => {
       typingExtendMs: 200,
       maxDelayMs: 5000,
       typingExemptUsers: [],
-    }, undefined, { persistCompaction });
+    }, undefined, { persistCompaction },
+    { enabled, alwaysLoad: { maxContextEstTokens: 2000 }, onDemand: { maxContextEstTokens: 8000 } });
 
     try {
       driver.handleEvent('chat', [
@@ -489,6 +570,13 @@ describe('createDriver debounce scheduling', () => {
       expect(Array.isArray(compactionArgs.tools)).toBe(true);
       expect(compactionArgs.tools!.length).toBeGreaterThan(0);
       expect(compactionArgs.tools!.map(t => t.name)).toContain('send_message');
+      const now = Date.now();
+      mocks.callModelStep.mockResolvedValue({ entries: [], toolCalls: [], usage, requestedAtMs: now });
+      driver.handleEvent('chat', [{ ...rc(now)[0]!, mentionsMe: true }]);
+      await vi.waitFor(() => expect(mocks.callModelStep).toHaveBeenCalled());
+      const mainTools = (mocks.callModelStep.mock.calls[0]![1] as Parameters<ReturnType<typeof createRunner>['callModelStep']>[1]).tools;
+      expect(mainTools.some(tool => tool.function.name === 'load_note')).toBe(enabled);
+      expect(compactionArgs.tools).toEqual(mainTools.map(toToolSchema));
       expect(mocks.renderSystemPrompt).toHaveBeenCalled();
       expect(persistCompaction).toHaveBeenCalledOnce();
     } finally {

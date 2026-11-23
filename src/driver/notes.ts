@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -35,9 +35,12 @@ type NoteMetadata = v.InferOutput<typeof NoteMetadataSchema>;
 export interface ChatNote extends NoteMetadata {
   id: string;
   body: string;
+  resumeOffset?: number;
 }
 
-export type NoteDraft = Omit<ChatNote, 'load' | 'sourceMessageIds'> & { sourceMessageIds?: string[] };
+export type NoteDraft = Omit<ChatNote, 'load' | 'sourceMessageIds' | 'resumeOffset'> & { sourceMessageIds?: string[] };
+
+const bodyVersion = (body: string) => createHash('sha256').update(body).digest('hex');
 
 const isNoteId = (id: string): boolean => id.length <= NOTE_LIMITS.id && noteIdRegex.test(id);
 
@@ -64,6 +67,15 @@ export const createNoteStore = (
 ) => {
   const folder = join(root, platform, Buffer.from(chatId).toString('hex'));
   const pathFor = (id: string) => join(folder, `${id}.md`);
+  const writeAtomic = async (path: string, content: string) => {
+    const temp = join(folder, `.${randomUUID()}.tmp`);
+    try {
+      await writeFile(temp, content, { flag: 'wx', mode: 0o600 });
+      await rename(temp, path);
+    } finally {
+      await rm(temp, { force: true });
+    }
+  };
 
   return {
     async list(): Promise<ChatNote[]> {
@@ -71,14 +83,26 @@ export const createNoteStore = (
         if (isMissing(err)) return [];
         throw err;
       });
-      const notes = await Promise.all(entries.filter(entry => entry.isFile() && entry.name.endsWith('.md')).map(async entry => {
-        const id = entry.name.slice(0, -3);
+      const files = new Set(entries.filter(entry => entry.isFile()).map(entry => entry.name));
+      const notes = await Promise.all([...files].filter(name => name.endsWith('.md')).map(async name => {
+        const id = name.slice(0, -3);
         if (!isNoteId(id)) return undefined;
         const content = await readFile(pathFor(id), 'utf8').catch((err: unknown) => {
           if (isMissing(err)) return '';
           throw err;
         });
-        return parseNote(id, content);
+        const note = parseNote(id, content);
+        if (note && files.has(`${id}.cursor`)) {
+          const cursor = await readFile(join(folder, `${id}.cursor`), 'utf8').catch((err: unknown) => {
+            if (isMissing(err)) return '';
+            throw err;
+          });
+          const [version, offset] = cursor.split(' ');
+          const position = Number(offset);
+          if (version === bodyVersion(note.body) && Number.isSafeInteger(position) && position > 0 && position < Array.from(note.body).length)
+            note.resumeOffset = position;
+        }
+        return note;
       }));
       return notes.filter((note): note is ChatNote => note != null)
         .sort((first, second) => first.id.localeCompare(second.id));
@@ -101,13 +125,13 @@ export const createNoteStore = (
       }
 
       await mkdir(folder, { recursive: true, mode: 0o700 });
-      const temp = join(folder, `.${randomUUID()}.tmp`);
-      try {
-        await writeFile(temp, `---\n${stringifyYaml(metadata)}---\n\n${body}\n`, { flag: 'wx', mode: 0o600 });
-        await rename(temp, path);
-      } finally {
-        await rm(temp, { force: true });
-      }
+      await writeAtomic(path, `---\n${stringifyYaml(metadata)}---\n\n${body}\n`);
+    },
+    async saveReadPosition(note: ChatNote, offset?: number): Promise<void> {
+      if (!isNoteId(note.id)) throw new Error('Invalid note ID');
+      const path = join(folder, `${note.id}.cursor`);
+      if (offset === undefined) await rm(path, { force: true });
+      else await writeAtomic(path, `${bodyVersion(note.body)} ${offset}`);
     },
   };
 };

@@ -183,8 +183,11 @@ export const findWorkingWindowCursor = (
   return entries.at(-1)?.timeMs ?? 0;
 };
 
-const trimEntries = (entries: ConversationEntry[], maxTokens: number): { entries: ConversationEntry[]; estimatedTokens: number } => {
-  let total = entries.reduce((a, e) => a + entryTokens(e), 0);
+export const estimateEntryTokens = (entries: ConversationEntry[]): number =>
+  entries.reduce((total, entry) => total + entryTokens(entry), 0);
+
+export const trimEntries = (entries: ConversationEntry[], maxTokens: number): { entries: ConversationEntry[]; estimatedTokens: number } => {
+  let total = estimateEntryTokens(entries);
   if (total <= maxTokens) return { entries, estimatedTokens: total };
 
   // Deep-clone the first user InputMessage's parts for in-place trimming
