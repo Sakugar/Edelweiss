@@ -155,6 +155,9 @@ src/
 │   ├── prompt.ts           # Prompt rendering — loads all velin templates from prompts/; main prompt starts with sanitized chat_name/chat_id metadata
 │   ├── turn-prefix.ts      # Shared builders for the main-turn system-prompt params + capabilities, so compaction reuses an identical cached prefix
 │   ├── skills.ts           # Skill loader: reads markdown files/directories from skills/ folder → SkillInfo map
+│   ├── notes.ts            # Platform- and chat-scoped Markdown note storage with atomic writes
+│   ├── note-context.ts     # Independent budgets for always-loaded text, on-demand index and paged note reads
+│   ├── notes.test.ts       # Note persistence, isolation and budget regression tests
 │   ├── im-api/             # Raw IM API bridge for the advanced_im_api tool
 │   │   ├── types.ts        # ImApiInvoker / ImApiPlatform / per-platform prompt metadata types
 │   │   ├── descriptions.ts # Per-platform tool descriptions
@@ -179,6 +182,7 @@ src/
 │   │   ├── read-image.ts     # createReadImageTool
 │   │   ├── ask-for-image.ts  # Main-agent multi-turn questions against a persisted image conversation
 │   │   ├── load-skill.ts     # createLoadSkillTool
+│   │   ├── notes.ts          # write_note and load_note tool definitions
 │   │   ├── stay-silent.ts    # createStaySilentTool
 │   │   ├── react-message.ts  # createReactMessageTool (Telegram only)
 │   │   ├── kill-task.ts      # createKillTaskTool
@@ -303,7 +307,7 @@ Top-level directories:
 - `evals/` — optional user-authored LLM eval suites, IC fixtures, prompt variants, and evaluator modules. These are run manually with `pnpm eval <suite.ts>` and are not part of ordinary Vitest unit tests.
   - `evals/skill-activation/` — compares the pre/post Skill Activation system prompts with fake skills and reports `load_skill` / correct-skill call rates.
   - `evals/agreement-review/` — exercises the `agreement_review_required` recovery choice, checking that substantive drafts are rewritten while pure agreement becomes a reaction.
-- `docs/` — architecture and design documents (not prompts). See [notes design](docs/notes-design.md) for the main Agent's proposed per-chat notes.
+- `docs/` — architecture and design documents (not prompts). See [notes design](docs/notes-design.md) for the main Agent's per-chat notes.
   - `dcp-design.md` — architecture rationale and Driver/TR design
   - `content-aware-frame-selection.md` — MSE-based frame selection findings and rationale
   - `humanize.md` — human-likeness design notes
@@ -645,6 +649,10 @@ Toggles are per-chat (deep-merged with `default` like all other config). They ar
 A `load_skill` tool lets the LLM fetch skill content at runtime by `skill_id`, injected into the system prompt as an available-tools catalog. When skills are available, `primary-system.velin.md` includes Skill Activation guidance: before answering or using other task-specific tools, the LLM must check the listed skills and load a clearly matching skill by exact ID. This decouples skill authoring from code changes — adding a skill is just creating a supported `.md` file or skill directory.
 
 The bash tool intercepts built-in pseudo commands before shell execution: `chat_info` returns the current chat ID, platform channel, and absolute skills folder; `skill_info <skill_id>` returns one loaded skill's metadata and absolute file/resource paths. Skills are loaded once when a chat scope is created, so changes to the skills folder require process restart or a fresh chat scope before these pseudo-command results update.
+
+### Chat Notes
+
+Opt in with `chats.<id>.notes.enabled`. The main-turn `features/notes.ts` loads Markdown from `data/notes/<platform>/<hex chat ID>/`, applies separate estimated-token budgets for `always` and `on-demand`, and registers `write_note` and `load_note`. Note writes are silent and always create or update on-demand notes. Maintainers can edit front matter to load a note every turn. Note tool pairs stay out of persisted turn responses, so new turns retrieve notes through the current budgets.
 
 ### Background Tasks
 

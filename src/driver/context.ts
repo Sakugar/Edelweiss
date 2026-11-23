@@ -167,7 +167,7 @@ export const findWorkingWindowCursor = (
   const entries: Entry[] = [];
   for (const seg of rc) {
     const tokens = seg.content.reduce((a, p) =>
-      (a, p) => a + (p.type === 'text' ? estimateTextTokens(p.text) : IMAGE_TOKENS), 0);
+      a + (p.type === 'text' ? estimateTextTokens(p.text) : IMAGE_TOKENS), 0);
     entries.push({ timeMs: seg.receivedAtMs, tokens });
   }
   for (const tr of trs) {

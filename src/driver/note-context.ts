@@ -58,7 +58,7 @@ const renderNotePage = (note: ChatNote, offset: number, budget: number): string 
 
   let low = 1;
   let high = remaining - 1;
-  let best = undefined;
+  let best: string | undefined;
   while (low <= high) {
     const count = Math.floor((low + high) / 2);
     const candidate = page(count);

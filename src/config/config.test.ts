@@ -17,6 +17,30 @@ const loadFixture = (chats: Record<string, unknown> = {}, endpoint: Record<strin
 
 beforeEach(() => vi.clearAllMocks());
 
+describe('notes config', () => {
+  it('supports independent per-chat budgets and leaves notes off unless enabled', () => {
+    const config = loadFixture({
+      default: {
+        notes: { alwaysLoad: { maxContextEstTokens: 500 } },
+        tools: { webSearch: { tavilyKey: 'test' } },
+      },
+      enabled: { notes: { enabled: true, onDemand: { maxContextEstTokens: 1000 } } },
+    });
+    expect(resolveChatConfig(config, 'other').notes?.enabled).toBe(false);
+    expect(resolveChatConfig(config, 'enabled').notes).toEqual({
+      enabled: true,
+      alwaysLoad: { maxContextEstTokens: 500 },
+      onDemand: { maxContextEstTokens: 1000 },
+    });
+    expect(resolveChatConfig(loadFixture({ enabled: { notes: { enabled: true } } }), 'enabled').notes).toEqual({
+      enabled: true,
+      alwaysLoad: { maxContextEstTokens: 2000 },
+      onDemand: { maxContextEstTokens: 8000 },
+    });
+    expect(() => loadFixture({ enabled: { notes: { onDemand: { maxContextEstTokens: -1 } } } })).toThrow();
+  });
+});
+
 describe('dongpo review config', () => {
   it('defaults to enabled and supports per-chat overrides', () => {
     const config = loadFixture({ a: { humanLikeness: { notDongpo: false } } });

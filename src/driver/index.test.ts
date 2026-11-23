@@ -1,7 +1,13 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createDriver } from './index';
+import * as noteStorage from './notes';
 import { createRunner } from './runner';
+import { executeToolCall } from './tools/execution';
 import type { ResolvedChatConfig, RuntimeConfig } from '../config/config';
 import { setupLogger, useLogger } from '../config/logger';
 import type { LlmEndpoint, Usage } from '../llm/types';
@@ -12,7 +18,7 @@ const mocks = vi.hoisted(() => ({
   renderSubagentSystemPrompt: vi.fn(async () => 'subagent-system'),
   renderSystemPrompt: vi.fn(async () => 'system'),
   callModelStep: vi.fn(),
-  executeToolStep: vi.fn(async () => []),
+  executeToolStep: vi.fn<ReturnType<typeof createRunner>['executeToolStep']>(async () => []),
   runCompaction: vi.fn(),
 }));
 
@@ -147,9 +153,10 @@ const createTestDriver = (
   debounce: ResolvedChatConfig['debounce'],
   onDebounceStateChange?: (chatId: string, isDebouncing: boolean) => void,
   overrides: Partial<Parameters<typeof createDriver>[1]> = {},
+  notes?: ResolvedChatConfig['notes'],
 ) => createDriver({
   chatIds: ['chat'],
-  resolveChatConfig: () => chatConfig(debounce),
+  resolveChatConfig: () => ({ ...chatConfig(debounce), notes }),
 }, {
   loadTurnResponses: async () => [],
   persistTurnResponse: async () => {},
@@ -174,6 +181,70 @@ const createTestDriver = (
   onDebounceStateChange,
   logger: useLogger('test'),
   ...overrides,
+});
+
+describe('main Agent notes', () => {
+  it('writes silently and reads in a later turn without persisting note tool content in the turn response', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'edelweiss-note-turn-'));
+    const store = noteStorage.createNoteStore('telegram', 'chat', root);
+    const storeOverride = vi.spyOn(noteStorage, 'createNoteStore').mockReturnValue(store);
+    const persistTurnResponse = vi.fn(async () => {});
+    const sendMessage = vi.fn(async () => ({ messageId: 1, date: 1 }));
+    const driver = createTestDriver(
+      { initialDelayMs: 1000, typingExtendMs: 200, maxDelayMs: 5000, typingExemptUsers: [] },
+      undefined,
+      { persistTurnResponse, sendMessage },
+      { enabled: true, alwaysLoad: { maxContextEstTokens: 2000 }, onDemand: { maxContextEstTokens: 8000 } },
+    );
+
+    const requestedAtMs = Date.now();
+    const draft = { id: 'deploy', title: '部署决定', description: '本周部署时间', body: '周五 22:00 部署。' };
+    const call = { kind: 'toolCall', callId: 'note-call', name: 'write_note', args: JSON.stringify(draft) } as const;
+    mocks.callModelStep.mockReset().mockResolvedValue({
+      entries: [],
+      toolCalls: [],
+      usage,
+      requestedAtMs,
+    }).mockResolvedValueOnce({
+      entries: [{ kind: 'message', role: 'assistant', parts: [call], reasoning: undefined }],
+      toolCalls: [call],
+      usage,
+      requestedAtMs,
+    });
+    const executeNotes: ReturnType<typeof createRunner>['executeToolStep'] = async (calls, params) =>
+      await Promise.all(calls.map(tool => executeToolCall(tool.callId, tool.name, tool.args, params.tools, params.log)));
+    mocks.executeToolStep.mockImplementationOnce(executeNotes);
+    try {
+      driver.handleEvent('chat', [{ ...rc(requestedAtMs - 1)[0]!, mentionsMe: true }]);
+      await vi.waitFor(() => expect(persistTurnResponse).toHaveBeenCalledTimes(1));
+      expect(await store.list()).toEqual([{ ...draft, load: 'on-demand', sourceMessageIds: [] }]);
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(mocks.callModelStep).toHaveBeenCalledTimes(1);
+      expect(persistTurnResponse).toHaveBeenCalledWith('chat', expect.objectContaining({ entries: [] }));
+
+      const nextRequest = requestedAtMs + 100;
+      const read = { kind: 'toolCall', callId: 'read-call', name: 'load_note', args: JSON.stringify({ id: draft.id }) } as const;
+      mocks.callModelStep.mockResolvedValue({
+        entries: [], toolCalls: [], usage, requestedAtMs: nextRequest,
+      }).mockResolvedValueOnce({
+        entries: [{ kind: 'message', role: 'assistant', parts: [read], reasoning: undefined }],
+        toolCalls: [read],
+        usage,
+        requestedAtMs: nextRequest,
+      });
+      mocks.executeToolStep.mockImplementationOnce(executeNotes);
+      driver.handleEvent('chat', [{ ...rc(nextRequest - 1)[0]!, mentionsMe: true }]);
+      await vi.waitFor(() => expect(persistTurnResponse).toHaveBeenCalledTimes(3));
+      expect(mocks.callModelStep).toHaveBeenCalledTimes(3);
+      const working = JSON.stringify(mocks.callModelStep.mock.calls[2]?.[0]);
+      expect(working).toContain(draft.body);
+      expect(JSON.stringify(persistTurnResponse.mock.calls)).not.toContain(draft.body);
+    } finally {
+      driver.stop();
+      storeOverride.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('createDriver debounce scheduling', () => {

@@ -7,7 +7,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 
 import type { ResolvedChatConfig } from '../config/config';
 
-export const NOTE_ID_PATTERN = '^(?!(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$)[a-z0-9]+(?:-[a-z0-9]+)*$';
+export const NOTE_ID_PATTERN = '^(?!(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$)[a-z0-9]+(?:-[a-z0-9]+)*$(?!\\s)';
 const noteIdRegex = new RegExp(NOTE_ID_PATTERN);
 const frontMatter = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/;
 
