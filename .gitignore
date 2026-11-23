@@ -7,6 +7,7 @@ yarn-debug.log*
 # Local data (DB, session, etc.)
 data/
 *.db
+/todo.md
 yarn-error.log*
 lerna-debug.log*
 
