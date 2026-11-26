@@ -14,6 +14,7 @@ export interface TurnContext {
   turn: TurnState;
   scratch: TurnScratch;
   signal: AbortSignal;
+  completedNormally: boolean;
 }
 
 export const createTurnScratch = (): TurnScratch => ({
@@ -26,6 +27,7 @@ export const createTurnContext = (turn: TurnState): TurnContext => ({
   turn,
   scratch: createTurnScratch(),
   signal: turn.abortController.signal,
+  completedNormally: false,
 });
 
 export interface StepOutput {
